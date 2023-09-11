@@ -13,27 +13,27 @@ namespace Microsoft.AspNetCore.Components;
 public class PersistentComponentState
 {
     private IDictionary<string, byte[]>? _existingState;
+    private readonly IDictionary<string, byte[]> _currentState;
 
-    private readonly List<PersistenceCallback> _registeredCallbacks;
-    private ISerializationModeHandler _serializationModeHandler;
+    private readonly List<RegistrationContext> _registeredCallbacks;
 
-    internal PersistenceContext? PersistenceContext { get; set; }
-
-    internal PersistentComponentState(List<PersistenceCallback> registeredCallbacks, ISerializationModeHandler serializationModeHandler)
+    internal PersistentComponentState(
+        IDictionary<string, byte[]> currentState,
+        List<RegistrationContext> pauseCallbacks)
     {
-        _registeredCallbacks = registeredCallbacks;
-        _serializationModeHandler = serializationModeHandler;
+        _currentState = currentState;
+        _registeredCallbacks = pauseCallbacks;
     }
+
+    internal bool PersistingState { get; set; }
 
     internal void InitializeExistingState(IDictionary<string, byte[]> existingState)
     {
-        // The existing state is either Server or WebAssembly
+        if (_existingState != null)
+        {
+            throw new InvalidOperationException("PersistentComponentState already initialized.");
+        }
         _existingState = existingState ?? throw new ArgumentNullException(nameof(existingState));
-    }
-
-    internal void SetSerializationModeHandler(ISerializationModeHandler serializationModeHandler)
-    {
-        _serializationModeHandler = serializationModeHandler;
     }
 
     /// <summary>
@@ -46,9 +46,10 @@ public class PersistentComponentState
     {
         ArgumentNullException.ThrowIfNull(callback);
 
-        var serializationMode = _serializationModeHandler.GetCallbackTargetSerializationMode(callback.Target);
+        var registration = new RegistrationContext(callback, null);
+        _registeredCallbacks.Add(new RegistrationContext(callback, null));
 
-        return RegisterOnPersisting(callback, serializationMode);
+        return new PersistingComponentStateSubscription(_registeredCallbacks, registration);
     }
 
     /// <summary>
@@ -56,16 +57,16 @@ public class PersistentComponentState
     /// Registered callbacks can use this opportunity to persist their state so that it can be retrieved when the application resumes.
     /// </summary>
     /// <param name="callback">The callback to invoke when the application is being paused.</param>
-    /// <param name="serializationMode">The <see cref="PersistedStateSerializationMode"/> to register the callback.</param>
     /// <returns>A subscription that can be used to unregister the callback when disposed.</returns>
-    public PersistingComponentStateSubscription RegisterOnPersisting(Func<Task> callback, PersistedStateSerializationMode serializationMode)
+    public PersistingComponentStateSubscription RegisterOnPersisting(Func<Task> callback, IComponentRenderMode renderMode)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        ArgumentNullException.ThrowIfNull(renderMode);
 
-        var persistenceCallback = new PersistenceCallback(callback, serializationMode);
-        _registeredCallbacks.Add(persistenceCallback);
+        var registration = new RegistrationContext(callback, renderMode);
+        _registeredCallbacks.Add(registration);
 
-        return new PersistingComponentStateSubscription(_registeredCallbacks, persistenceCallback);
+        return new PersistingComponentStateSubscription(_registeredCallbacks, registration);
     }
 
     /// <summary>
@@ -77,17 +78,19 @@ public class PersistentComponentState
     [RequiresUnreferencedCode("JSON serialization and deserialization might require types that cannot be statically analyzed.")]
     public void PersistAsJson<[DynamicallyAccessedMembers(JsonSerialized)] TValue>(string key, TValue instance)
     {
-        if (PersistenceContext is not { State: var currentState })
+        ArgumentNullException.ThrowIfNull(key);
+
+        if (!PersistingState)
         {
             throw new InvalidOperationException("Persisting state is only allowed during an OnPersisting callback.");
         }
 
-        if (currentState.ContainsKey(key))
+        if (_currentState.ContainsKey(key))
         {
             throw new ArgumentException($"There is already a persisted object under the same key '{key}'");
         }
 
-        currentState.Add(key, JsonSerializer.SerializeToUtf8Bytes(instance, JsonSerializerOptionsProvider.Options));
+        _currentState.Add(key, JsonSerializer.SerializeToUtf8Bytes(instance, JsonSerializerOptionsProvider.Options));
     }
 
     /// <summary>
@@ -141,4 +144,6 @@ public class PersistentComponentState
             return false;
         }
     }
+
+    internal readonly record struct RegistrationContext(Func<Task> Callback, IComponentRenderMode? RenderMode);
 }

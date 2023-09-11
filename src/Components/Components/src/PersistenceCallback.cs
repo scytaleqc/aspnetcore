@@ -2,5 +2,3 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 namespace Microsoft.AspNetCore.Components;
-
-internal readonly record struct PersistenceCallback(Func<Task> Callback, PersistedStateSerializationMode SerializationMode);

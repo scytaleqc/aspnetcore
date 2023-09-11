@@ -11,32 +11,23 @@ namespace Microsoft.AspNetCore.Components.Infrastructure;
 /// </summary>
 public class ComponentStatePersistenceManager
 {
-    private readonly List<PersistenceCallback> _registeredCallbacks = new();
+    private readonly List<PersistentComponentState.RegistrationContext> _registeredCallbacks = new();
     private readonly ILogger<ComponentStatePersistenceManager> _logger;
+    private readonly Dictionary<string, byte[]> _currentState = new Dictionary<string, byte[]>(StringComparer.Ordinal);
 
     /// <summary>
     /// Initializes a new instance of <see cref="ComponentStatePersistenceManager"/>.
     /// </summary>
-    public ComponentStatePersistenceManager(ILogger<ComponentStatePersistenceManager> logger, ISerializationModeHandler serializationModeHandler)
+    public ComponentStatePersistenceManager(ILogger<ComponentStatePersistenceManager> logger)
     {
         _logger = logger;
-
-        State = new(_registeredCallbacks, serializationModeHandler);
+        State = new(_currentState,_registeredCallbacks);
     }
 
     /// <summary>
     /// Gets the <see cref="ComponentStatePersistenceManager"/> associated with the <see cref="ComponentStatePersistenceManager"/>.
     /// </summary>
     public PersistentComponentState State { get; }
-
-    /// <summary>
-    /// 
-    /// </summary>
-    /// <param name="serializationModeHandler"></param>
-    public void SetSerializationModeHandler(ISerializationModeHandler serializationModeHandler)
-    {
-        State.SetSerializationModeHandler(serializationModeHandler);
-    }
 
     /// <summary>
     /// Restores the component application state from the given <see cref="IPersistentComponentStateStore"/>.
@@ -56,39 +47,60 @@ public class ComponentStatePersistenceManager
     /// <param name="renderer">The <see cref="Renderer"/> that components are being rendered.</param>
     /// <returns>A <see cref="Task"/> that will complete when the state has been restored.</returns>
     public Task PersistStateAsync(IPersistentComponentStateStore store, Renderer renderer)
-        => PersistStateAsync(store, renderer.Dispatcher);
-
-    /// <summary>
-    /// Persists the component application state into the given <see cref="IPersistentComponentStateStore"/>
-    /// so that it could be restored on Server.
-    /// </summary>
-    /// <param name="store">The <see cref="IPersistentComponentStateStore"/> to persist the application state into.</param>
-    /// <param name="dispatcher">The <see cref="Dispatcher"/> corresponding to the components' renderer.</param>
-    /// <returns>A <see cref="Task"/> that will complete when the state has been restored.</returns>
-    public Task PersistStateAsync(IPersistentComponentStateStore store, Dispatcher dispatcher)
     {
-        return dispatcher.InvokeAsync(PauseAndPersistState);
+        return renderer.Dispatcher.InvokeAsync(PauseAndPersistState);
 
         async Task PauseAndPersistState()
         {
-            var currentState = new Dictionary<string, byte[]>();
+            InferRenderModes(renderer);
 
-            State.PersistenceContext = new(currentState);
-            await PauseAsync(store);
-            State.PersistenceContext = default;
+            if (store is IEnumerable<IPersistentComponentStateStore> prerenderedStore)
+            {
+                foreach (var st in prerenderedStore)
+                {
+                    await PauseAsync(st);
+                    await store.PersistStateAsync(_currentState);
+                }
+            }
+            else
+            {
+                await PauseAsync(store);
+                await store.PersistStateAsync(_currentState);
+            }
 
-            await store.PersistStateAsync(currentState);
+            void InferRenderModes(Renderer renderer)
+            {
+                for (var i = 0; i < _registeredCallbacks.Count; i++)
+                {
+                    var registration = _registeredCallbacks[i];
+                    if (registration.RenderMode != null)
+                    {
+                        // Explicitly set render mode, so nothing to do.
+                        continue;
+                    }
+
+                    if (registration.Callback.Target is IComponent component)
+                    {
+                        var componentRenderMode = renderer.GetComponentRenderMode(component);
+                        _registeredCallbacks[i] = new PersistentComponentState.RegistrationContext(registration.Callback, componentRenderMode);
+                        continue;
+                    }
+
+                    throw new InvalidOperationException(
+                        $"The registered callback {registration.Callback.Method.Name} must be associated with a component or define" +
+                        $" an explicit render mode type during registration.");
+                }
+            }
         }
     }
 
     internal Task PauseAsync(IPersistentComponentStateStore store)
     {
         List<Task>? pendingCallbackTasks = null;
-
         for (var i = 0; i < _registeredCallbacks.Count; i++)
         {
             var callback = _registeredCallbacks[i];
-            if (!store.SupportsSerializationMode(callback.SerializationMode))
+            if (!store.CanSupportRenderMode(callback.RenderMode!))
             {
                 continue;
             }
@@ -126,7 +138,7 @@ public class ComponentStatePersistenceManager
             }
             catch (Exception ex)
             {
-                logger.LogError(new EventId(1000, "PersistenceCallbackError"), ex, "There was an error executing a callback while pausing the application.");
+                logger.LogError(new EventId(1000, "PersistenceCallbackError"), ex, "There was an error executing a Callback while pausing the application.");
                 return Task.CompletedTask;
             }
 
@@ -138,7 +150,7 @@ public class ComponentStatePersistenceManager
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(new EventId(1000, "PersistenceCallbackError"), ex, "There was an error executing a callback while pausing the application.");
+                    logger.LogError(new EventId(1000, "PersistenceCallbackError"), ex, "There was an error executing a Callback while pausing the application.");
                     return;
                 }
             }

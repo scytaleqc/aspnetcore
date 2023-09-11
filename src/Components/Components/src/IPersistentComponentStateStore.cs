@@ -22,9 +22,9 @@ public interface IPersistentComponentStateStore
     Task PersistStateAsync(IReadOnlyDictionary<string, byte[]> state);
 
     /// <summary>
-    /// Returns a value that indicates whether the store supports the given <see cref="PersistedStateSerializationMode"/>.
+    /// dfasdefa
     /// </summary>
-    /// <param name="serializationMode">The <see cref="PersistedStateSerializationMode"/> in question.</param>
-    /// <returns><c>true</c> if the serialization mode is supported by the store, otherwise <c>false</c>.</returns>
-    bool SupportsSerializationMode(PersistedStateSerializationMode serializationMode) => true;
+    /// <param name="renderMode"></param>
+    /// <returns></returns>
+    public bool CanSupportRenderMode(IComponentRenderMode renderMode) => true;
 }
